@@ -1,33 +1,34 @@
-package main
+package service
 
 import (
 	"context"
 	"fmt"
 	"net"
 	"sync"
+	"util"
 )
 
 type TCPClient struct {
 	conn   net.Conn
-	buf    Buffer
+	buf    util.Buffer
 	sink   chan []byte
 	wg     *sync.WaitGroup
 	cancel context.CancelFunc
 }
 
-func (cl TCPClient) addrStr() string {
+func (cl TCPClient) AddrStr() string {
 	return cl.conn.RemoteAddr().String()
 }
 
-func (cl *TCPClient) Start(outChan chan NetMsg, errChan chan NetErr) {
+func (cl *TCPClient) Start(outChan chan util.NetMsg, errChan chan util.NetErr) {
 	cl.sink = make(chan []byte, 1024) // TODO: try to use 0- or 1-sized channels
-	cl.buf = Buffer{buf: []byte{}}
+	cl.buf = util.Buffer{Data: []byte{}}
 	ctx, cancel := context.WithCancel(context.Background())
 	cl.cancel = cancel
 	cl.wg = &sync.WaitGroup{}
 	name := fmt.Sprintf("Client[%s]", cl.conn.RemoteAddr().String())
-	go RunTCPReader(ctx, name, cl.conn, outChan, errChan, cl.wg)
-	go RunTCPWriter(ctx, name, cl.conn, cl.sink, errChan, cl.wg)
+	go util.RunTCPReader(ctx, name, cl.conn, outChan, errChan, cl.wg)
+	go util.RunTCPWriter(ctx, name, cl.conn, cl.sink, errChan, cl.wg)
 }
 
 func (cl *TCPClient) SendMsg(data []byte) {
@@ -35,34 +36,38 @@ func (cl *TCPClient) SendMsg(data []byte) {
 	cl.sink <- data
 }
 
+func (cl *TCPClient) AppendChunk(data []byte) []byte {
+	return cl.buf.AppendChunk(data)
+}
+
 func (cl *TCPClient) Stop() {
-	LogInfo("Stopping client [%s]", cl.addrStr())
+	util.LogInfo("Stopping client [%s]", cl.AddrStr())
 	cl.cancel()
 	cl.conn.Close()
 }
 
 func (cl *TCPClient) Wait() {
 	cl.wg.Wait()
-	LogInfo("Client [%s] stopped", cl.addrStr())
+	util.LogInfo("Client [%s] stopped", cl.AddrStr())
 }
 
 // current TCP cleints
-var tcpClients = map[string]*TCPClient{}
+var TCPClients = map[string]*TCPClient{}
 
 func AddTCPClient(conn net.Conn) *TCPClient {
 	s := conn.RemoteAddr().String()
-	cl, ok := tcpClients[s]
+	cl, ok := TCPClients[s]
 	if !ok {
-		LogInfo("Adding a new TCP client with addr '%s'", s)
+		util.LogInfo("Adding a new TCP client with addr '%s'", s)
 		cl = &TCPClient{
 			conn: conn,
 			sink: make(chan []byte, 1024),
 		}
 	}
-	tcpClients[s] = cl
+	TCPClients[s] = cl
 	return cl
 }
 
 func DelTCPClient(cl *TCPClient) {
-	delete(tcpClients, cl.addrStr())
+	delete(TCPClients, cl.AddrStr())
 }

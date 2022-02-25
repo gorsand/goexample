@@ -8,6 +8,9 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"goexample/service"
+	"util"
 )
 
 const (
@@ -27,45 +30,45 @@ func main() {
 
 	// create connections and listeners
 	// NOTE: may Fatal, so do it before any goroutuine started
-	udpConnForUpstream := UDPDial("UDPUpstream", udpAddrStrForUpstream)
-	udpConnForClients := UDPListen("UDPClients", udpListenPortForClients)
-	tcpListenerForClients := TCPListen("TCPClients", tcpListenPortForClients)
+	udpConnForUpstream := util.UDPDial("Upstream", udpAddrStrForUpstream)
+	udpConnForClients := util.UDPListen("Clients", udpListenPortForClients)
+	tcpListenerForClients := util.TCPListen("Clients", tcpListenPortForClients)
 
 	// start upstream UDP connection
-	udpDataFromUpstream := make(chan NetMsg, 1024)
-	udpDataToUpstream := make(chan NetMsg, 1024)
+	udpDataFromUpstream := make(chan util.NetMsg, 1024)
+	udpDataToUpstream := make(chan util.NetMsg, 1024)
 	ctx, udpUpCancel := context.WithCancel(context.Background())
 	udpUpWg := sync.WaitGroup{}
-	go RunUDPReader(ctx, "UDPUpstream", udpConnForUpstream, udpDataFromUpstream, &udpUpWg)
-	go RunUDPWriter(ctx, "UDPUpstream", udpConnForUpstream, udpDataToUpstream, &udpUpWg)
+	go util.RunUDPReader(ctx, "Upstream", udpConnForUpstream, udpDataFromUpstream, &udpUpWg)
+	go util.RunUDPWriter(ctx, "Upstream", udpConnForUpstream, udpDataToUpstream, &udpUpWg)
 
 	// start upstream TCP recconect loop
-	tcpUpstreamBuffer := Buffer{buf: []byte{}}
-	tcpDataFromUpstream := make(chan NetMsg, 1024)
+	tcpUpstreamBuffer := util.Buffer{Data: []byte{}}
+	tcpDataFromUpstream := make(chan util.NetMsg, 1024)
 	tcpDataToUpstream := make(chan []byte, 1024)
-	tcpErrFromUpstream := make(chan NetErr, 2)
+	tcpErrFromUpstream := make(chan util.NetErr, 2)
 	ctx, tcpUpCancel := context.WithCancel(context.Background())
 	tcpUpWg := sync.WaitGroup{}
-	go RunTCPReconnect(ctx, "TCPUpstream", tcpAddrStrForUpstream, tcpDataFromUpstream, tcpDataToUpstream, tcpErrFromUpstream, &tcpUpWg)
+	go util.RunTCPReconnect(ctx, "Upstream", tcpAddrStrForUpstream, tcpDataFromUpstream, tcpDataToUpstream, tcpErrFromUpstream, &tcpUpWg)
 
 	// start clients UDP connection
-	udpDataFromClients := make(chan NetMsg, 1024)
-	udpDataToClients := make(chan NetMsg, 1024)
+	udpDataFromClients := make(chan util.NetMsg, 1024)
+	udpDataToClients := make(chan util.NetMsg, 1024)
 	ctx, udpClCancel := context.WithCancel(context.Background())
 	udpClWg := sync.WaitGroup{}
-	go RunUDPReader(ctx, "UDPClients", udpConnForClients, udpDataFromClients, &udpClWg)
-	go RunUDPWriter(ctx, "UDPClients", udpConnForClients, udpDataToClients, &udpClWg)
+	go util.RunUDPReader(ctx, "Clients", udpConnForClients, udpDataFromClients, &udpClWg)
+	go util.RunUDPWriter(ctx, "Clients", udpConnForClients, udpDataToClients, &udpClWg)
 
 	// start client TCP acceptor
 	tcpConnectionsFromClients := make(chan net.Conn, 1024)
 	tcpAcceptorErrors := make(chan error, 2)
 	ctx, clAcceptorCancel := context.WithCancel(context.Background())
 	clAcceptorWg := sync.WaitGroup{}
-	go RunTCPAcceptor(ctx, "ClientsAcceptor", tcpListenerForClients, tcpConnectionsFromClients, tcpAcceptorErrors, &clAcceptorWg)
+	go util.RunTCPAcceptor(ctx, "Clients", tcpListenerForClients, tcpConnectionsFromClients, tcpAcceptorErrors, &clAcceptorWg)
 
 	// create TCP clients channels
-	tcpDataFromClients := make(chan NetMsg, 1024)
-	tcpErrorsFromClients := make(chan NetErr, 1024)
+	tcpDataFromClients := make(chan util.NetMsg, 1024)
+	tcpErrorsFromClients := make(chan util.NetErr, 1024)
 
 	// redirect OS signals to a channel
 	signalsFromOS := make(chan os.Signal, 1)
@@ -93,7 +96,7 @@ func main() {
 
 		case err := <-tcpAcceptorErrors:
 
-			LogInfo("Client TCP acceptor error: %s", err.Error())
+			util.LogInfo("Client TCP acceptor error: %s", err.Error())
 
 			clAcceptorCancel()
 			clAcceptorWg.Wait() // NOTE: bad idea! we freeze event loop here
@@ -103,53 +106,53 @@ func main() {
 			// TODO: shold we clear the channels? better - have a channel of connections
 			ctx, cancel := context.WithCancel(context.Background())
 			clAcceptorCancel = cancel
-			go RunTCPAcceptor(ctx, "ClientsAcceptor", tcpListenerForClients, tcpConnectionsFromClients, tcpAcceptorErrors, &clAcceptorWg)
+			go util.RunTCPAcceptor(ctx, "Clients", tcpListenerForClients, tcpConnectionsFromClients, tcpAcceptorErrors, &clAcceptorWg)
 
 		case conn := <-tcpConnectionsFromClients:
 
-			LogInfo("RECV a connection from a new client with addr '%s'", conn.RemoteAddr().String())
+			util.LogInfo("RECV a connection from a new client with addr '%s'", conn.RemoteAddr().String())
 
-			cl := AddTCPClient(conn)
+			cl := service.AddTCPClient(conn)
 			cl.Start(tcpDataFromClients, tcpErrorsFromClients)
 
 		case msg := <-tcpDataFromClients:
 
-			cl, ok := tcpClients[msg.Addr.String()]
+			cl, ok := service.TCPClients[msg.Addr.String()]
 			if !ok {
-				LogError("SKIP TCP message from unknown addr '%s'", msg.Addr.String())
+				util.LogError("SKIP TCP message from unknown addr '%s'", msg.Addr.String())
 				break
 			}
 
 			// append piece of message and check have complete data
-			if data := cl.buf.AppendChunk(msg.Data); data != nil {
-				LogInfo("RECV TCP message from client (%s): %s", msg.Addr.String(), string(data))
+			if data := cl.AppendChunk(msg.Data); data != nil {
+				util.LogInfo("RECV TCP message from client (%s): %s", msg.Addr.String(), string(data))
 
 				//
 				// HERE we should build the request to the upstream
 				// now - simply bypass the data to the upstream
 				//
 
-				LogInfo("SEND TCP message to client (%s): %s", cl.addrStr(), string(data))
+				util.LogInfo("SEND TCP message to client (%s): %s", cl.AddrStr(), string(data))
 				tcpDataToUpstream <- msg.Data
 			}
 
 		case err := <-tcpErrorsFromClients:
 
 			addrStr := err.Addr.String()
-			cl, ok := tcpClients[addrStr]
+			cl, ok := service.TCPClients[addrStr]
 
 			if !ok {
 				if err.Error == nil {
-					LogError("SKIP TCP nil error from unknown addr '%s'", addrStr)
+					util.LogError("SKIP TCP nil error from unknown addr '%s'", addrStr)
 				} else {
-					LogError("SKIP TCP errorfrom unknwon addr '%s': %s", addrStr, err.Error.Error())
+					util.LogError("SKIP TCP errorfrom unknwon addr '%s': %s", addrStr, err.Error.Error())
 				}
 				break
 			}
-			LogInfo("RECV TCP error from client (%s): %s", addrStr, err.Error.Error())
+			util.LogInfo("RECV TCP error from client (%s): %s", addrStr, err.Error.Error())
 			//  just stop and remove the client
 			cl.Stop()
-			DelTCPClient(cl)
+			service.DelTCPClient(cl)
 
 		//
 		// handle UDP clients
@@ -157,16 +160,16 @@ func main() {
 
 		case msg := <-udpDataFromClients:
 
-			cl := GetOrAddUDPClient(msg.Addr)
-			LogInfo("RECV UDP message from client (%s): %s", msg.Addr.String(), string(msg.Data))
+			cl := service.GetOrAddUDPClient(msg.Addr)
+			util.LogInfo("RECV UDP message from client (%s): %s", msg.Addr.String(), string(msg.Data))
 
 			//
 			// HERE we should build the request to the upstream
 			// now - simply bypass the data to the upstream via UDP
 			//
 
-			LogInfo("SEND UDP message to client (%s): %s", cl.Addr.String(), string(msg.Data))
-			udpDataToUpstream <- NetMsg{
+			util.LogInfo("SEND UDP message to client (%s): %s", cl.Addr.String(), string(msg.Data))
+			udpDataToUpstream <- util.NetMsg{
 				Addr: udpConnForUpstream.RemoteAddr(),
 				Data: msg.Data,
 			}
@@ -179,7 +182,7 @@ func main() {
 
 			if err.Error == nil && !isTCPUpstreamConnected {
 				isTCPUpstreamConnected = true
-				LogInfo("Upstream TCP connection is UP")
+				util.LogInfo("Upstream TCP connection is UP")
 				//
 				// HERE we should do something when connection is UP
 				// Eg. notify all clients
@@ -188,7 +191,7 @@ func main() {
 
 			if err.Error != nil && isTCPUpstreamConnected {
 				isTCPUpstreamConnected = false
-				LogInfo("Upstream TCP conenction is DOWN, reason: %s", err.Error.Error())
+				util.LogInfo("Upstream TCP conenction is DOWN, reason: %s", err.Error.Error())
 				//
 				// HERE we should do something when connection is DOWN
 				// Eg. notify all clients
@@ -198,15 +201,15 @@ func main() {
 		case msg := <-tcpDataFromUpstream:
 
 			if data := tcpUpstreamBuffer.AppendChunk(msg.Data); data != nil {
-				LogInfo("RECV TCP message from upstream: %s", string(data))
+				util.LogInfo("RECV TCP message from upstream: %s", string(data))
 
 				//
 				// HERE we should build and send the replies to some of clients
 				// now - simply bypass the data to all the TCP clients
 				//
 
-				LogInfo("SEND message to all TCP clients: %s", string(data))
-				for _, cl := range tcpClients {
+				util.LogInfo("SEND message to all TCP clients: %s", string(data))
+				for _, cl := range service.TCPClients {
 					cl.SendMsg(msg.Data)
 				}
 			}
@@ -217,16 +220,16 @@ func main() {
 
 		case msg := <-udpDataFromUpstream:
 
-			LogInfo("RECV UDP message from upstream: %s", string(msg.Data))
+			util.LogInfo("RECV UDP message from upstream: %s", string(msg.Data))
 
 			//
 			// HERE we should build and send the replies to some of clients
 			// now - simply bypass the data to all the UDP clients
 			//
 
-			LogInfo("SEND message to all UDP clients: %s", string(msg.Data))
-			for _, cl := range udpClients {
-				udpDataToClients <- NetMsg{Addr: cl.Addr, Data: msg.Data}
+			util.LogInfo("SEND message to all UDP clients: %s", string(msg.Data))
+			for _, cl := range service.UDPClients {
+				udpDataToClients <- util.NetMsg{Addr: cl.Addr, Data: msg.Data}
 			}
 
 		//
@@ -235,30 +238,37 @@ func main() {
 
 		case sig := <-signalsFromOS:
 
-			LogInfo("Received OS signal: %s, shutting down ...", sig.String())
+			util.LogInfo("Received OS signal: %s, shutting down ...", sig.String())
 
 			// stop clients listener (so as not to get new connections)
 			tcpListenerForClients.Close()
+			util.LogInfo("Clients listener stopped")
 
 			// stop TCP clients readers and writers
-			for _, cl := range tcpClients {
+			for _, cl := range service.TCPClients {
 				cl.Stop()
 				cl.Wait()
 			}
+			util.LogInfo("TCP clients stopped")
 
 			// stop UDP clients listener
+			// HERE hangs
 			udpClCancel()
+			udpConnForClients.Close() // need to close before wait to stop the UDP reader
 			udpClWg.Wait()
-			udpConnForClients.Close()
+			util.LogInfo("UDP clients stopped")
 
 			// stop upstream UDP conn
 			udpUpCancel()
 			udpUpWg.Wait()
 			udpConnForUpstream.Close()
+			util.LogInfo("UDP for upstream stopped")
 
 			// stop upstream TCP conn
 			tcpUpCancel()
 			tcpUpWg.Wait()
+			util.LogInfo("TCP for upstream stopped")
+
 			return
 
 		//
@@ -275,7 +285,7 @@ func main() {
 				//
 				// HERE we should do any periodic stuff
 				//
-				LogInfo("Waiting events...")
+				util.LogInfo("Waiting events...")
 			}
 			lastUpdateMsec = nowMsec
 		}

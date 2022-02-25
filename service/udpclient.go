@@ -1,21 +1,24 @@
-package main
+package service
 
-import "net"
+import (
+	"net"
+	"util"
+)
 
 type UDPClient struct {
 	Addr net.Addr
 }
 
 // current UDP active clients
-var udpClients = map[string]*UDPClient{}
+var UDPClients = map[string]*UDPClient{}
 
 func GetOrAddUDPClient(addr net.Addr) *UDPClient {
 	s := addr.String()
-	cl, ok := udpClients[s]
+	cl, ok := UDPClients[s]
 	if !ok {
-		LogInfo("Adding a new UDP client (%s)", s)
+		util.LogInfo("Adding a new UDP client (%s)", s)
 		cl = &UDPClient{Addr: addr}
 	}
-	udpClients[s] = cl
+	UDPClients[s] = cl
 	return cl
 }

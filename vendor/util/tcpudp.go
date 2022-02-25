@@ -1,4 +1,4 @@
-package main
+package util
 
 import (
 	"context"
@@ -96,7 +96,8 @@ func UDPDial(connName, addrStr string) *net.UDPConn {
 }
 
 // RunUDPReader starts a UDP reading loop,
-// stops on conn close or error
+// conn close or error
+// NOTE: does NOT always stop on ctx expire - can hand on conn.ReadFrom
 func RunUDPReader(ctx context.Context, connName string, conn *net.UDPConn, output chan NetMsg, wg *sync.WaitGroup) {
 	if wg != nil {
 		wg.Add(1)
