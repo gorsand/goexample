@@ -242,32 +242,26 @@ func main() {
 
 			// stop clients listener (so as not to get new connections)
 			tcpListenerForClients.Close()
-			util.LogInfo("Clients listener stopped")
 
 			// stop TCP clients readers and writers
 			for _, cl := range service.TCPClients {
 				cl.Stop()
 				cl.Wait()
 			}
-			util.LogInfo("TCP clients stopped")
 
 			// stop UDP clients listener
-			// HERE hangs
 			udpClCancel()
 			udpConnForClients.Close() // need to close before wait to stop the UDP reader
 			udpClWg.Wait()
-			util.LogInfo("UDP clients stopped")
 
 			// stop upstream UDP conn
 			udpUpCancel()
-			udpUpWg.Wait()
 			udpConnForUpstream.Close()
-			util.LogInfo("UDP for upstream stopped")
+			udpUpWg.Wait()
 
 			// stop upstream TCP conn
 			tcpUpCancel()
 			tcpUpWg.Wait()
-			util.LogInfo("TCP for upstream stopped")
 
 			return
 
